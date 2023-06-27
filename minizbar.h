@@ -16,6 +16,12 @@ namespace minizbar {
     #define NUM_SCN_CFGS (ZBAR_CFG_Y_DENSITY - ZBAR_CFG_X_DENSITY + 1)
     #define ISAAC_SZ_LOG (8)
     #define ISAAC_SZ          (1<<ISAAC_SZ_LOG)
+
+    #define movedelta(dx, dy) do {                  \
+        x += (dx);                              \
+        y += (dy);                              \
+        p += (dx) + ((uintptr_t)(dy) * w);       \
+    } while(0);
     
 
 }  // 宏声明以及类型声明定义结束
@@ -105,6 +111,12 @@ namespace minizbar {
 
     struct recycle_bucket_s;
     typedef struct recycle_bucket_s recycle_bucket_t;
+
+    typedef enum zbar_modifier_e {
+        ZBAR_MOD_GS1 = 0,
+        ZBAR_MOD_AIM,
+        ZBAR_MOD_NUM,
+    } zbar_modifier_t;
 
 } // 结构体声明与枚举体的声明与定义结束
 

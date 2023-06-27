@@ -234,12 +234,13 @@ int minizbar::zbar_image_scanner_set_config(zbar_image_scanner_t* iscn, zbar_sym
     return(0);
 }
 
-int minizbar::zbar_image_scanner_parse_config(zbar_image_scanner_t* scanner, const char* config_string)
+static inline int minizbar::zbar_image_scanner_parse_config(zbar_image_scanner_t* scanner, const char* config_string)
 {
     zbar_symbol_type_t sym;
     zbar_config_t cfg;
     int val;
-    return(zbar_parse_config);
+    return(zbar_parse_config(config_string, &sym, &cfg, &val) ||
+        zbar_image_scanner_set_config(scanner, sym, cfg, val));
 }
 
 void minizbar::zbar_image_scanner_enable_cache(zbar_image_scanner_t* iscn, int enable)
@@ -321,8 +322,178 @@ int minizbar::zbar_scan_image(zbar_image_scanner_t* iscn, zbar_image_t* img)
     data = (const uint8_t*)img->data;
 
     zbar_scanner_new_scan(scn);
+    density = CFG(iscn, ZBAR_CFG_Y_DENSITY);
+    if (density > 0) {
+        const uint8_t* p = data;
+        int x = 0, y = 0;
 
-    return 0;
+        int border = (((img->crop_h - 1) % density) + 1) / 2;
+        if (border > img->crop_h / 2)
+            border = img->crop_h / 2;
+        border += img->crop_y;
+        assert(border <= h);
+        iscn->dy = 0;
+        movedelta(img->crop_x, border);
+        iscn->v = y;
+
+        while (y < cy1) {
+            int cx0 = img->crop_x;
+            iscn->dx = iscn->du = 1;
+            iscn->umin = cx0;
+            while (x < cx1) {
+                uint8_t d = *p;
+                movedelta(1, 0);
+                zbar_scan_y(scn, d);
+            }
+            ASSERT_POS;
+            quiet_border(iscn);
+            movedelta(-1, density);
+            iscn->v = y;
+            if (y >= cy1)
+                break;
+            iscn->dx = iscn->du = -1;
+            iscn->umin = cx1;
+            while (x >= cx0) {
+                uint8_t d = *p;
+                movedelta(-1, 0);
+                zbar_scan_y(scn, d);
+            }
+            ASSERT_POS;
+            quiet_border(iscn);
+            movedelta(1, density);
+            iscn->v = y;
+        }
+
+    }
+    iscn->dx = 0;
+    density = CFG(iscn, ZBAR_CFG_X_DENSITY);
+    if (density > 0) {
+        const uint8_t* p = data;
+        int x = 0, y = 0;
+
+        int border = (((img->crop_w - 1) % density) + 1) / 2;
+        if (border > img->crop_w / 2)
+            border = img->crop_w / 2;
+        border += img->crop_x;
+        assert(border <= w);
+        movedelta(border, img->crop_y);
+        iscn->v = x;
+
+        while (x < cx1) {
+            int cy0 = img->crop_y;
+            iscn->dy = iscn->du = 1;
+            iscn->umin = cy0;
+            while (y < cy1) {
+                uint8_t d = *p;
+                movedelta(0, 1);
+                zbar_scan_y(scn, d);
+            }
+            ASSERT_POS;
+            quiet_border(iscn);
+
+            movedelta(density, -1);
+            iscn->v = x;
+            if (x >= cx1)
+                break;
+
+            iscn->dy = iscn->du = -1;
+            iscn->umin = cy1;
+            while (y >= cy0) {
+                uint8_t d = *p;
+                movedelta(0, -1);
+                zbar_scan_y(scn, d);
+            }
+            ASSERT_POS;
+            quiet_border(iscn);
+
+            movedelta(density, 1);
+            iscn->v = x;
+        }
+    }
+    iscn->dy = 0;
+    iscn->img = nullptr;
+
+    _zbar_qr_decode(iscn->qr, iscn, img);
+
+    char filter = (!iscn->enable_cache &&
+        (density == 1 || CFG(iscn, ZBAR_CFG_Y_DENSITY) == 1));
+    int nean = 0, naddon = 0;
+    if (syms->nsyms) {
+        zbar_symbol_t** symp;
+        for (symp = &syms->head; *symp; ) {
+            zbar_symbol_t* sym = *symp;
+            if (sym->cache_count <= 0 &&
+                ((sym->type < ZBAR_COMPOSITE && sym->type > ZBAR_PARTIAL) ||
+                    sym->type == ZBAR_DATABAR ||
+                    sym->type == ZBAR_DATABAR_EXP ||
+                    sym->type == ZBAR_CODABAR))
+            {
+                if ((sym->type == ZBAR_CODABAR || filter) && sym->quality < 4) {
+                    if (iscn->enable_cache) {
+                        zbar_symbol_t* entry = cache_lookup(iscn, sym);
+                        if (entry)
+                            entry->cache_count--;
+                        else
+                            assert(0);
+                    }
+
+                    /* recycle */
+                    *symp = sym->next;
+                    syms->nsyms--;
+                    sym->next = NULL;
+                    _zbar_image_scanner_recycle_syms(iscn, sym);
+                    continue;
+                }
+                else if (sym->type < ZBAR_COMPOSITE &&
+                    sym->type != ZBAR_ISBN10)
+                {
+                    if (sym->type > ZBAR_EAN5)
+                        nean++;
+                    else
+                        naddon++;
+                }
+            }
+            symp = &sym->next;
+        }
+
+        if (nean == 1 && naddon == 1 && iscn->ean_config) {
+            /* create container symbol for composite result */
+            zbar_symbol_t* ean = NULL, * addon = NULL;
+            for (symp = &syms->head; *symp; ) {
+                zbar_symbol_t* sym = *symp;
+                if (sym->type < ZBAR_COMPOSITE && sym->type > ZBAR_PARTIAL) {
+                    /* move to composite */
+                    *symp = sym->next;
+                    syms->nsyms--;
+                    sym->next = NULL;
+                    if (sym->type <= ZBAR_EAN5)
+                        addon = sym;
+                    else
+                        ean = sym;
+                }
+                else
+                    symp = &sym->next;
+            }
+            assert(ean);
+            assert(addon);
+
+            int datalen = ean->datalen + addon->datalen + 1;
+            zbar_symbol_t* ean_sym =
+                _zbar_image_scanner_alloc_sym(iscn, ZBAR_COMPOSITE, datalen);
+            ean_sym->orient = ean->orient;
+            ean_sym->syms = _zbar_symbol_set_create();
+            memcpy(ean_sym->data, ean->data, ean->datalen);
+            memcpy(ean_sym->data + ean->datalen,
+                addon->data, addon->datalen + 1);
+            ean_sym->syms->head = ean;
+            ean->next = addon;
+            ean_sym->syms->nsyms = 2;
+            _zbar_image_scanner_add_sym(iscn, ean_sym);
+        }
+    }
+    if (syms->nsyms && iscn->handler)
+        iscn->handler(img, iscn->userdata);
+    return(syms->nsyms);
 }
 
 
