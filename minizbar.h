@@ -7,6 +7,15 @@
 // 宏声明以及类型声明定义
 namespace minizbar {
     typedef long refcnt_t;
+    typedef int qr_point[2];
+
+
+    #define RECYCLE_BUCKETS (5)
+    #define NUM_SYMS (20)
+    #define DECODE_WINDOW (16)
+    #define NUM_SCN_CFGS (ZBAR_CFG_Y_DENSITY - ZBAR_CFG_X_DENSITY + 1)
+    #define ISAAC_SZ_LOG (8)
+    #define ISAAC_SZ          (1<<ISAAC_SZ_LOG)
     
 
 }  // 宏声明以及类型声明定义结束
@@ -59,9 +68,6 @@ namespace minizbar {
         ZBAR_ADDON = 0x0700,
     } zbar_symbol_type_t;
 
-    struct zbar_symbol_s;
-    typedef struct zbar_symbol_s zbar_symbol_t;
-
     struct point_s;
     typedef struct point_s point_t;
 
@@ -91,10 +97,31 @@ namespace minizbar {
         ZBAR_CFG_Y_DENSITY,         /**< image scanner horizontal scan density */
     } zbar_config_t;
 
+    struct zbar_decoder_s;
+    typedef struct zbar_decoder_s zbar_decoder_t;
+
+    struct qr_finder_s;
+    typedef struct qr_finder_s qr_finder_t;
+
+    struct recycle_bucket_s;
+    typedef struct recycle_bucket_s recycle_bucket_t;
+
 } // 结构体声明与枚举体的声明与定义结束
 
 // 结构体的定义
 namespace minizbar {
+    struct zbar_scanner_s {
+        zbar_decoder_t* decoder; 
+        unsigned y1_min_thresh;
+        unsigned x;            
+        int y0[4];            
+        int y1_sign;           
+        unsigned y1_thresh;    
+        unsigned cur_edge;     
+        unsigned last_edge;    
+        unsigned width;       
+    };
+
     struct point_s { int x, y; };
 
 
@@ -127,15 +154,116 @@ namespace minizbar {
         zbar_symbol_t* tail;        /* last of unfiltered symbol results */
     };
 
+    struct zbar_image_s {
+        uint32_t format;          
+        unsigned width, height;    
+        const void* data;         
+        unsigned long datalen;     
+        unsigned crop_x, crop_y;  
+        unsigned crop_w, crop_h;
+        void* userdata;           
+        zbar_image_cleanup_handler_t* cleanup;
+        refcnt_t refcnt;          
+        // zbar_video_t* src;         
+        int srcidx;                
+        zbar_image_t* next;       
+        unsigned seq;             
+        zbar_symbol_set_t* syms;   
+    };
+
+    typedef struct rs_gf256 {
+        unsigned char log[256];
+        unsigned char exp[511];
+    }rs_gf256;
+
+    typedef struct isaac_ctx {
+        unsigned n;
+        unsigned r[ISAAC_SZ];
+        unsigned m[ISAAC_SZ];
+        unsigned a;
+        unsigned b;
+        unsigned c;
+    }isaac_ctx;
+
+    typedef struct qr_finder_lines {
+        qr_finder_line* lines;
+        int nlines, clines;
+    } qr_finder_lines;
+
+    typedef struct qr_reader {
+        rs_gf256 gf;
+        isaac_ctx isaac;
+        qr_finder_lines finder_lines[2];
+    }qr_reader;
+
+    struct recycle_bucket_s {
+        int nsyms;
+        zbar_symbol_t* head;
+    };
+
+    struct zbar_image_scanner_s {
+        zbar_scanner_t* scn;  
+        zbar_decoder_t* dcode;   
+        qr_reader* qr;   
+        const void* userdata;  
+        zbar_image_data_handler_t* handler;
+        unsigned long time;     
+        zbar_image_t* img;       
+        int dx, dy, du, umin, v;   
+        zbar_symbol_set_t* syms;    
+        recycle_bucket_t recycle[RECYCLE_BUCKETS];
+        int enable_cache;          
+        zbar_symbol_t* cache; 
+        unsigned config;          
+        unsigned ean_config;
+        int configs[NUM_SCN_CFGS];  
+        int sym_configs[1][NUM_SYMS]; 
+
+        int stat_syms_new;
+        int stat_iscn_syms_inuse, stat_iscn_syms_recycle;
+        int stat_img_syms_inuse, stat_img_syms_recycle;
+        int stat_sym_new;
+        int stat_sym_recycle[RECYCLE_BUCKETS];
+    };
+
+    typedef struct qr_finder_line {
+        qr_point pos;
+        int len;
+        int boffs;
+        int eoffs;
+    } qr_finder_line;
+
+    struct qr_finder_s {
+        unsigned s5;
+        qr_finder_line line;
+        unsigned config;
+    };
+
+    typedef void (zbar_decoder_handler_t)(zbar_decoder_t* decoder);
+    struct zbar_decoder_s {
+        unsigned char idx;                 
+        unsigned w[DECODE_WINDOW];      
+        zbar_symbol_type_t type;           
+        zbar_symbol_type_t lock;           
+        unsigned modifiers;             
+        int direction;  
+        unsigned s6;
+        unsigned buf_alloc;          
+        unsigned buflen;                  
+        unsigned char* buf;              
+        void* userdata;                    
+        zbar_decoder_handler_t* handler;    
+        qr_finder_t qrf;                    
+    };
+
+
     
 } // 结构体定义结束
 
 // 函数声明
 namespace minizbar {
 
-    extern void* zbar_image_get_userdata(const zbar_image_t* image);
-
-    extern zbar_image_scanner_t* zbar_image_scanner_create(void);
+    extern zbar_image_scanner_t* zbar_image_scanner_create();
     extern void zbar_image_scanner_destroy(zbar_image_scanner_t* scanner);
     extern zbar_image_data_handler_t* zbar_image_scanner_set_data_handler(zbar_image_scanner_t* scanner, zbar_image_data_handler_t* handler,const void* userdata);
 
@@ -151,47 +279,17 @@ namespace minizbar {
 
     extern const zbar_symbol_t* zbar_symbol_set_first_symbol(const zbar_symbol_set_t* symbols);
 
-    extern zbar_image_t* zbar_image_create(void);
-
-    extern void zbar_image_set_userdata(zbar_image_t* image,void* userdata);
+    extern zbar_image_t* zbar_image_create();
 
     extern void zbar_image_ref(zbar_image_t* image,int refs);
 
-    extern unsigned long zbar_image_get_format(const zbar_image_t* image);
-
-    extern void zbar_image_set_format(zbar_image_t* image,unsigned long format);
-
     extern unsigned long zbar_fourcc_parse(const char* format);
-
-    extern unsigned zbar_image_get_sequence(const zbar_image_t* image);
-
-    extern void zbar_image_set_sequence(zbar_image_t* image,unsigned sequence_num);
-
-    extern unsigned zbar_image_get_width(const zbar_image_t* image);
-
-    extern unsigned zbar_image_get_height(const zbar_image_t* image);
-
-    extern void zbar_image_get_size(const zbar_image_t* image,unsigned* width,unsigned* height);
-
-    extern void zbar_image_set_size(zbar_image_t* image,unsigned width,unsigned height);
-
-    extern void zbar_image_get_crop(const zbar_image_t* image,unsigned* x,unsigned* y,unsigned* width,unsigned* height);
-
-    extern void zbar_image_set_crop(zbar_image_t* image,unsigned x,unsigned y,unsigned width,unsigned height);
-
-    extern const void* zbar_image_get_data(const zbar_image_t* image);
-
-    extern unsigned long zbar_image_get_data_length(const zbar_image_t* img);
 
     typedef void (zbar_image_cleanup_handler_t)(zbar_image_t* image);
 
-    extern void zbar_image_set_data(zbar_image_t* image,const void* data,unsigned long data_byte_length,zbar_image_cleanup_handler_t* cleanup_hndlr);
-
-    extern zbar_image_t* zbar_image_convert(const zbar_image_t* image,unsigned long format);
+    extern void zbar_image_set_crop(zbar_image_t* image,unsigned x,unsigned y,unsigned width,unsigned height);
 
     extern zbar_image_t* zbar_image_convert_resize(const zbar_image_t* image,unsigned long format,unsigned width,unsigned height);
-
-    extern const zbar_symbol_set_t* zbar_image_get_symbols(const zbar_image_t* image);
 
     extern void zbar_image_set_symbols(zbar_image_t* image,const zbar_symbol_set_t* symbols);
 
@@ -202,8 +300,6 @@ namespace minizbar {
     extern void zbar_image_scanner_enable_cache(zbar_image_scanner_t* scanner,int enable);
 
     extern void zbar_image_scanner_recycle_image(zbar_image_scanner_t* scanner,zbar_image_t* image);
-
-    extern const zbar_symbol_set_t* zbar_image_scanner_get_results(const zbar_image_scanner_t* scanner);
 
     extern int zbar_scan_image(zbar_image_scanner_t* scanner,zbar_image_t* image);
 
@@ -578,6 +674,16 @@ namespace minizbar {
 
     };
 
+    inline SymbolIterator SymbolSet::symbol_begin() const {
+        return (SymbolIterator(*this));
+    }
+
+    inline const SymbolIterator SymbolSet::symbol_end() const {
+        return (SymbolIterator());
+    }
+
+
+
     class Image {
     public:
         class Handler {
@@ -596,7 +702,7 @@ namespace minizbar {
                 const void* userdata)
             {
                 if (userdata) {
-                    Image* image = (Image*)zbar_image_get_userdata(zimg);
+                    Image* image = (Image*)(zimg->userdata);
                     if (image)
                         ((Handler*)userdata)->image_callback(*image);
                     else {
@@ -629,7 +735,7 @@ namespace minizbar {
             unsigned long length = 0)
             : _img(zbar_image_create())
         {
-            zbar_image_set_userdata(_img, this);
+            _img->userdata = this;
             if (width && height)
                 set_size(width, height);
             if (format.length())
@@ -640,8 +746,9 @@ namespace minizbar {
 
         ~Image()
         {
-            if (zbar_image_get_userdata(_img) == this)
-                zbar_image_set_userdata(_img, NULL);
+            if (_img->userdata == this) {
+                _img->userdata = nullptr;
+            }
             zbar_image_ref(_img, -1);
         }
 
@@ -657,50 +764,53 @@ namespace minizbar {
 
         unsigned long get_format() const
         {
-            return(zbar_image_get_format(_img));
+            return(_img->format);
         }
 
         void set_format(unsigned long format)
         {
-            zbar_image_set_format(_img, format);
+            _img->format = format;
         }
 
         void set_format(const std::string& format)
         {
             unsigned long fourcc = zbar_fourcc_parse(format.c_str());
-            zbar_image_set_format(_img, fourcc);
+            _img->format = fourcc;
         }
 
         unsigned get_sequence() const
         {
-            return(zbar_image_get_sequence(_img));
+            return(_img->seq);
         }
 
         void set_sequence(unsigned sequence_num)
         {
-            zbar_image_set_sequence(_img, sequence_num);
+            _img->seq = sequence_num;
         }
 
         unsigned get_width() const
         {
-            return(zbar_image_get_width(_img));
+            return(_img->width);
         }
 
         unsigned get_height() const
         {
-            return(zbar_image_get_height(_img));
+            return(_img->height);
         }
 
         void get_size(unsigned& width,
             unsigned& height) const
         {
-            zbar_image_get_size(_img, &width, &height);
+            width = _img->width;
+            height = _img->height;
         }
 
         void set_size(unsigned width,
             unsigned height)
         {
-            zbar_image_set_size(_img, width, height);
+            _img->crop_x = _img->crop_y = 0;
+            _img->width = _img->crop_w = width;
+            _img->height = _img->crop_h = height;
         }
 
         void get_crop(unsigned& x,
@@ -708,7 +818,10 @@ namespace minizbar {
             unsigned& width,
             unsigned& height) const
         {
-            zbar_image_get_crop(_img, &x, &y, &width, &height);
+            x = _img->crop_x;
+            y = _img->crop_y;
+            width = _img->width;
+            height = _img->height;
         }
 
         void set_crop(unsigned x,
@@ -716,28 +829,51 @@ namespace minizbar {
             unsigned width,
             unsigned height)
         {
-            zbar_image_set_crop(_img, x, y, width, height);
+            unsigned img_width = _img->width;
+            if (x > img_width) {
+                x = img_width;
+            }
+            if (x + width > img_width) {
+                width = img_width - x;
+            }
+            _img->crop_x = x;
+            _img->crop_w = width;
+
+            unsigned img_height = _img->height;
+            if (y > img_height) {
+                y = img_height;
+            }
+            if (y + height > img_height) {
+                height = img_height - y;
+            }
+            _img->crop_y = y;
+            _img->crop_h = height;
+
         }
 
         const void* get_data() const
         {
-            return(zbar_image_get_data(_img));
+            return(_img->data);
         }
 
         unsigned long get_data_length() const
         {
-            return(zbar_image_get_data_length(_img));
+            return(_img->datalen);
         }
 
         void set_data(const void* data,
             unsigned long length)
         {
-            zbar_image_set_data(_img, data, length, _cleanup);
+            zbar_image_free_data(_img);
+            _img->data = data;
+            _img->datalen = length;
+            _img->cleanup = _cleanup;
+
         }
 
         Image convert(unsigned long format) const
         {
-            zbar_image_t* img = zbar_image_convert(_img, format);
+            zbar_image_t* img = zbar_image_convert_resize(_img, format,_img->width,_img->height);
             if (img)
                 return(Image(img));
             throw "ImageFormatError";
@@ -760,7 +896,7 @@ namespace minizbar {
         }
 
         const SymbolSet get_symbols() const {
-            return(SymbolSet(zbar_image_get_symbols(_img)));
+            return(SymbolSet(_img->syms));
         }
 
         void set_symbols(const SymbolSet& syms) {
@@ -783,9 +919,10 @@ namespace minizbar {
             int refs = 0)
             : _img(src)
         {
-            if (refs)
+            if (refs) {
                 zbar_image_ref(_img, refs);
-            zbar_image_set_userdata(_img, this);
+            }
+            _img->userdata = this;
         }
 
         static void _cleanup(zbar_image_t* img)
@@ -841,7 +978,7 @@ namespace minizbar {
             zbar_image_scanner_recycle_image(_scanner, image);
         }
         const SymbolSet get_results() const {
-            return(SymbolSet(zbar_image_scanner_get_results(_scanner)));
+            return(SymbolSet(_scanner->syms));
         }
         int scan(Image& image)
         {
