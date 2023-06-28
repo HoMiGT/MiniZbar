@@ -5,6 +5,12 @@
 
 using namespace minizbar;
 
+void zbar_decoder_set_userdata(zbar_decoder_t* dcode,
+    void* userdata)
+{
+    dcode->userdata = userdata;
+}
+
 zbar_image_scanner_t* minizbar::zbar_image_scanner_create()
 {
     zbar_image_scanner_t* iscn = (zbar_image_scanner_t*)calloc(1, sizeof(zbar_image_scanner_t));
@@ -16,7 +22,7 @@ zbar_image_scanner_t* minizbar::zbar_image_scanner_create()
         zbar_image_scanner_destroy(iscn);
         return(nullptr);
     }
-    iscn->dcode->userdata = iscn;
+    zbar_decoder_set_userdata(iscn->dcode, iscn);
     zbar_decoder_set_handler(iscn->dcode, symbol_handler);
 
     iscn->qr = _zbar_qr_create();
@@ -149,16 +155,7 @@ void minizbar::zbar_image_ref(zbar_image_t* image, int refs)
     _zbar_image_refcnt(image, refs);
 }
 
-static inline unsigned long minizbar::zbar_fourcc_parse(const char* format)
-{
-    unsigned long fourcc = 0;
-    if (format) {
-        for (int i = 0; i < 4 && format[i]; ++i) {
-            fourcc |= ((unsigned long)format[i]) << (i * 8);
-        }
-    }
-    return (fourcc);
-}
+
 
 void minizbar::zbar_image_set_crop(zbar_image_t* img, unsigned x, unsigned y, unsigned w, unsigned h)
 {
@@ -222,10 +219,7 @@ void minizbar::zbar_image_set_symbols(zbar_image_t* img, const zbar_symbol_set_t
 
 int minizbar::zbar_image_scanner_set_config(zbar_image_scanner_t* iscn, zbar_symbol_type_t sym, zbar_config_t cfg, int val)
 {
-    if (sym != ZBAR_NONE || sym != ZBAR_QRCODE) {
-        throw "No Support Other Type";
-    }
-    if ( sym == 0  && cfg == ZBAR_CFG_ENABLE) {
+    if ((sym == 0 || sym == ZBAR_COMPOSITE) && cfg == ZBAR_CFG_ENABLE) {
         iscn->ean_config = !!val;
         if (sym)
             return(0);
@@ -233,6 +227,43 @@ int minizbar::zbar_image_scanner_set_config(zbar_image_scanner_t* iscn, zbar_sym
 
     if (cfg < ZBAR_CFG_UNCERTAINTY)
         return(zbar_decoder_set_config(iscn->dcode, sym, cfg, val));
+
+    if (cfg < ZBAR_CFG_POSITION) {
+        int c, i;
+        if (cfg > ZBAR_CFG_UNCERTAINTY)
+            return(1);
+        c = cfg - ZBAR_CFG_UNCERTAINTY;
+        if (sym > ZBAR_PARTIAL) {
+            i = _zbar_get_symbol_hash(sym);
+            iscn->sym_configs[c][i] = val;
+        }
+        else
+            for (i = 0; i < NUM_SYMS; i++)
+                iscn->sym_configs[c][i] = val;
+        return(0);
+    }
+
+    if (sym > ZBAR_PARTIAL)
+        return(1);
+
+    if (cfg >= ZBAR_CFG_X_DENSITY && cfg <= ZBAR_CFG_Y_DENSITY) {
+        CFG(iscn, cfg) = val;
+        return(0);
+    }
+
+    if (cfg > ZBAR_CFG_POSITION)
+        return(1);
+    //cfg -= ZBAR_CFG_POSITION;
+    cfg = static_cast<zbar_config_t>(cfg & ~ZBAR_CFG_POSITION);
+
+
+    if (!val)
+        iscn->config &= ~(1 << cfg);
+    else if (val == 1)
+        iscn->config |= (1 << cfg);
+    else
+        return(1);
+
     return(0);
 }
 
@@ -4106,7 +4137,6 @@ int qr_code_data_list_extract_text(const qr_code_data_list* _qrlist,
                     cur_eci = entry->payload.eci;
                     if (cur_eci <= QR_ECI_ISO8859_16 && cur_eci != 14) {
                         if (cur_eci != QR_ECI_GLI0 && cur_eci != QR_ECI_CP437) {
-                            sprintf(buf, "ISO8859-%i", QR_MAXI(cur_eci, 3) - 2);
                             enc = buf;
                         }
                         else enc = "CP437";
@@ -5095,7 +5125,7 @@ zbar_scanner_t* minizbar::zbar_scanner_create(zbar_decoder_t* dcode)
     scn->decoder = dcode;
     scn->y1_min_thresh = ZBAR_SCANNER_THRESH_MIN;
     zbar_scanner_reset(scn);
-    return nullptr;
+    return (scn);
 }
 
 void minizbar::zbar_decoder_reset(zbar_decoder_t* dcode)

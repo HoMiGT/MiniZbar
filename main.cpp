@@ -39,7 +39,7 @@ void zbarDecode(const cv::Mat& gray, std::string& code, cv::Mat& qr_coordinate) 
 }
 
 int main() {
-    Mat gray = imread("D:/Donwloads/1.png", IMREAD_GRAYSCALE);
+    Mat gray = imread("D:/Downloads/1.png", IMREAD_GRAYSCALE);
     cv::Mat qrs(4, 1, CV_32FC2);
     std::string s;
     zbarDecode(gray,s,qrs);

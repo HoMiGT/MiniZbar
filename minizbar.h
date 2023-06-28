@@ -667,7 +667,16 @@ namespace minizbar {
 
     extern void zbar_image_ref(zbar_image_t* image,int refs);
 
-    extern unsigned long zbar_fourcc_parse(const char* format);
+    static inline unsigned long zbar_fourcc_parse(const char* format)
+    {
+        unsigned long fourcc = 0;
+        if (format) {
+            for (int i = 0; i < 4 && format[i]; ++i) {
+                fourcc |= ((unsigned long)format[i]) << (i * 8);
+            }
+        }
+        return (fourcc);
+    }
 
     extern void zbar_image_set_crop(zbar_image_t* image,unsigned x,unsigned y,unsigned width,unsigned height);
 
