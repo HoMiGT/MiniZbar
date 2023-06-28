@@ -4,3 +4,4 @@ MiniZbar.sln
 MiniZbar.vcxproj
 MiniZbar.vcxproj.*
 /x64/Release
+/x64/Debug
